@@ -17,6 +17,11 @@ dependencies = [
 dev = [
   "pytest>=7.0",
 ]
+merge = [
+  "transformers>=4.40.0",
+  "peft>=0.11.0",
+  "torch>=2.1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

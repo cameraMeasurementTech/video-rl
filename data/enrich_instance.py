@@ -1,5 +1,15 @@
 """
-Join ``instance_id`` to SWE / SWE-Bench-style manifest records for rewards and extra_info.
+Join ``instance_id`` to SWE / SWE-Bench-style **manifest** records for rewards and ``extra_info``.
+
+**Trajectory tables** (what you usually have) only need:
+
+- ``instance_id``
+- ``messages`` (multi-turn chat)
+
+They do **not** need ``repo``, ``base_commit``, or ``patch`` columns. Those fields live in a
+**separate manifest** JSON/JSONL file (e.g. exported from the SWE-Bench dataset by
+``instance_id``), passed to ``build_*_parquet --manifest``. For imitation-only SFT with no
+manifest, use ``--skip-manifest`` (see ``minimal_enrichment``).
 """
 
 from __future__ import annotations
@@ -138,6 +148,22 @@ def load_manifest_flat_jsonl(path: str | Path) -> Dict[str, InstanceManifest]:
         m = manifest_dict_to_dataclass({**row, "harness": merged})
         out[m.instance_id] = m
     return out
+
+
+def minimal_enrichment(instance_id: str) -> Tuple[RewardModelRow, Dict[str, Any]]:
+    """
+    Build ``reward_model`` / ``extra_info`` when the trajectory table has **only**
+    ``instance_id`` + ``messages`` and you are **not** joining an external manifest.
+
+    Use for LoRA SFT on trajectories alone, or as a stub before you add a manifest /
+    ``SWE_REWARD_SCRIPT`` for GRPO.
+    """
+    rm: RewardModelRow = {"ground_truth": "", "style": "no_manifest"}
+    ex: Dict[str, Any] = {
+        "instance_id": instance_id,
+        "benchmark_metadata": "not_in_trajectory_table",
+    }
+    return rm, ex
 
 
 def enrich_row(

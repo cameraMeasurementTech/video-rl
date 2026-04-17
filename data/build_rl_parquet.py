@@ -23,47 +23,16 @@ Example (directory of parquet shards):
 from __future__ import annotations
 
 import argparse
-import glob as glob_mod
-import json
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, cast
+from typing import Any, Dict, List, cast
 
 import datasets  # HuggingFace datasets for parquet export
 
-from .enrich_instance import InstanceManifest, enrich_row, load_manifest
+from .enrich_instance import InstanceManifest, enrich_row, load_manifest, minimal_enrichment
 from .schema import DEFAULT_DATA_SOURCE, VERL_PROMPT_KEY, ExpansionStrategy, VerlSweRow
 from .trajectory_expand import expand_trajectory
-
-
-def _parse_messages(cell: Any) -> List[Dict[str, Any]]:
-    """Normalize messages from Parquet/HF (list, JSON string, numpy, pyarrow struct arrays)."""
-    if cell is None:
-        raise TypeError("messages is None")
-    if isinstance(cell, str):
-        return json.loads(cell)
-    if isinstance(cell, dict):
-        # single message object by mistake
-        return [cell]
-    if isinstance(cell, (list, tuple)):
-        out: List[Dict[str, Any]] = []
-        for m in cell:
-            if isinstance(m, dict):
-                out.append(m)
-            else:
-                out.append(dict(m))  # Mapping-like (e.g. pandas Series)
-        return out
-    # numpy ndarray
-    try:
-        import numpy as np
-
-        if isinstance(cell, np.ndarray):
-            return _parse_messages(cell.tolist())
-    except ImportError:
-        pass
-    if hasattr(cell, "tolist"):
-        return _parse_messages(cell.tolist())
-    raise TypeError(f"messages must be list or JSON string, got {type(cell)}")
+from .trajectory_io import load_input_records, parse_messages
 
 
 def _normalize_value_for_parquet(value: Any) -> Any:
@@ -86,13 +55,17 @@ def build_rows_for_instance(
     strategy: ExpansionStrategy,
     data_source: str,
     drop_missing: bool,
+    skip_manifest: bool = False,
 ) -> List[VerlSweRow]:
-    enriched = enrich_row(instance_id, manifest, drop_missing=drop_missing)
-    if enriched is None:
-        return []
-    reward_model, base_extra = enriched
+    if skip_manifest:
+        reward_model, base_extra = minimal_enrichment(instance_id)
+    else:
+        enriched = enrich_row(instance_id, manifest, drop_missing=drop_missing)
+        if enriched is None:
+            return []
+        reward_model, base_extra = enriched
 
-    msgs = _parse_messages(messages)
+    msgs = parse_messages(messages)
     expanded = expand_trajectory(msgs, strategy)
     rows: List[VerlSweRow] = []
     for prompt_messages, step_index in expanded:
@@ -109,102 +82,6 @@ def build_rows_for_instance(
         }
         rows.append(row)
     return rows
-
-
-def collect_parquet_files(input_path: Path, *, recursive: bool) -> List[Path]:
-    """
-    Resolve ``input_path`` to a sorted list of ``.parquet`` files.
-
-    - **Glob** (path contains ``*`` or ``?``): expand with :func:`glob.glob`.
-    - **Single file**: must end with ``.parquet``.
-    - **Directory**: all ``*.parquet`` in that directory; with ``recursive``, use ``**/*.parquet``.
-    """
-    raw = str(input_path.expanduser())
-    if "*" in raw or "?" in raw:
-        matches = sorted(
-            glob_mod.glob(raw, recursive=recursive or "**" in raw)
-        )
-        files = [Path(m) for m in matches if str(m).lower().endswith(".parquet")]
-        if not files:
-            raise FileNotFoundError(f"No .parquet files matched pattern: {input_path}")
-        return files
-
-    path = Path(raw).resolve()
-    if path.is_file():
-        if path.suffix.lower() != ".parquet":
-            raise ValueError(f"Expected a .parquet file, got: {path}")
-        return [path]
-    if path.is_dir():
-        pattern = "**/*.parquet" if recursive else "*.parquet"
-        files = sorted(path.glob(pattern))
-        if not files:
-            raise FileNotFoundError(
-                f"No .parquet files under {path} (pattern {pattern!r}). "
-                "Use --recursive to include subdirectories."
-            )
-        return files
-    raise FileNotFoundError(f"Not a file, directory, or glob pattern: {input_path}")
-
-
-def load_parquet_rows(parquet_files: Sequence[Path]) -> datasets.Dataset:
-    """Load and concatenate multiple Parquet files into one HF Dataset."""
-    paths = [str(Path(p).expanduser().resolve()) for p in parquet_files]
-    if len(paths) == 1:
-        ds = datasets.load_dataset("parquet", data_files=paths[0], split="train")
-    else:
-        ds = datasets.load_dataset("parquet", data_files=paths, split="train")
-    return ds
-
-
-def load_jsonl_records(path: Path) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    path = path.expanduser().resolve()
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON at {path}:{line_no}: {e}") from e
-            if isinstance(obj, dict):
-                rows.append(obj)
-    return rows
-
-
-def load_input_records(
-    input_path: Path,
-    *,
-    recursive: bool = False,
-    instance_id_key: str = "instance_id",
-    messages_key: str = "messages",
-) -> tuple[List[Dict[str, Any]], List[Path]]:
-    """
-    Load trajectory rows from Parquet shard(s), a single Parquet file, or JSONL.
-
-    Parquet rows are normalized so keys match ``instance_id`` and ``messages`` (aliases remapped).
-
-    Returns ``(rows, parquet_source_files)``. For JSONL input, ``parquet_source_files`` is empty.
-    """
-    p = Path(input_path).expanduser()
-
-    if p.is_file() and p.suffix.lower() == ".jsonl":
-        return load_jsonl_records(p.resolve()), []
-
-    files = collect_parquet_files(p, recursive=recursive)
-    ds = load_parquet_rows(files)
-    n = len(ds)
-    raw: List[Dict[str, Any]] = []
-    for i in range(n):
-        row = dict(ds[i])
-        if instance_id_key != "instance_id" and instance_id_key in row:
-            row["instance_id"] = row.pop(instance_id_key)
-        if messages_key != "messages" and messages_key in row:
-            row["messages"] = row.pop(messages_key)
-        raw.append(row)
-
-    return raw, files
 
 
 def split_by_instance(
@@ -252,7 +129,17 @@ def main() -> None:
         metavar="NAME",
         help="Column name for chat messages in Parquet (default: messages)",
     )
-    p.add_argument("--manifest", type=Path, required=True, help="JSON/JSONL manifest keyed by instance_id")
+    p.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Optional JSON/JSONL manifest (repo/commit/patch by instance_id). Omit with --skip-manifest.",
+    )
+    p.add_argument(
+        "--skip-manifest",
+        action="store_true",
+        help="Trajectory has only instance_id + messages; no join (stub extra_info; use manifest later for GRPO rewards).",
+    )
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument(
         "--strategy",
@@ -264,8 +151,12 @@ def main() -> None:
     p.add_argument("--val-ratio", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
-
-    manifest = load_manifest(args.manifest)
+    if not args.skip_manifest:
+        if args.manifest is None:
+            raise SystemExit("Provide --manifest PATH or use --skip-manifest for trajectory-only data.")
+        manifest = load_manifest(args.manifest)
+    else:
+        manifest = {}
     raw_rows, parquet_sources = load_input_records(
         args.input,
         recursive=args.recursive,
@@ -279,6 +170,7 @@ def main() -> None:
 
     out_rows: List[VerlSweRow] = []
     drop_missing = not args.keep_missing_manifest
+    skip_manifest = args.skip_manifest
 
     for raw in raw_rows:
         iid = raw.get("instance_id")
@@ -294,6 +186,7 @@ def main() -> None:
             strategy=cast(ExpansionStrategy, args.strategy),
             data_source=args.data_source,
             drop_missing=drop_missing,
+            skip_manifest=skip_manifest,
         )
         out_rows.extend(built)
 
