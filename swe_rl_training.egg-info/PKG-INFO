@@ -1,3 +1,14 @@
+Metadata-Version: 2.4
+Name: swe-rl-training
+Version: 0.1.0
+Summary: SWE trajectories to VERL GRPO RL fine-tuning pipeline
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: datasets>=2.16.0
+Requires-Dist: pyarrow>=14.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
 # SWE trajectories → RL fine-tuning (standalone)
 
 Pipeline to turn rows of (`instance_id`, multi-turn `messages`) into **VERL** parquet and run **GRPO** with a pluggable SWE reward.
@@ -31,18 +42,9 @@ JSONL with one object per line (or a single JSON array). Required field: `instan
 
 ## Build parquet
 
-**Trajectory input** can be:
-
-- A **directory** of `.parquet` shards (e.g. 47 files / ~66k rows): `--input path/to/shards/`
-- A **single** `.parquet` file
-- A **glob** (quoted), e.g. `--input 'data/raw/part-*.parquet'`
-- Optional **`--recursive`** to load `**/*.parquet` under a directory
-- Column names default to `instance_id` and `messages`; override with `--instance-id-column` / `--messages-column`
-- JSONL is still supported for small tests
-
 ```bash
 python -m data.build_rl_parquet \
-  --input path/to/trajectory_parquet_dir/ \
+  --input path/to/trajectories.jsonl \
   --manifest path/to/manifest.jsonl \
   --out-dir data/parquet \
   --strategy prefix_next_assistant \
