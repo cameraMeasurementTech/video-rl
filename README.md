@@ -1,0 +1,58 @@
+# SWE trajectories → RL fine-tuning (standalone)
+
+Pipeline to turn rows of (`instance_id`, multi-turn `messages`) into **VERL** parquet and run **GRPO** with a pluggable SWE reward.
+
+## Layout
+
+- `data/schema.py` — VERL row shape (`messages` as `data.prompt_key`)
+- `data/enrich_instance.py` — join `instance_id` to a JSON/JSONL **manifest** (repo, commit, patch, harness metadata)
+- `data/trajectory_expand.py` — strategies **prefix_next_assistant**, **per_assistant_step**, **outcome_only**
+- `data/build_rl_parquet.py` — CLI to emit `train.parquet` / `val.parquet`
+- `train/tools/reward_swe.py` — `compute_score` for `custom_reward_function` (dry-run / heuristic / harness hook)
+- `train/scripts/run_grpo_swe.sh` — launches `python -m verl.trainer.main_ppo` with `data.prompt_key=messages`
+
+## Install
+
+```bash
+cd swe_rl_training
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Install **VERL** from a checkout (set `VERL_ROOT`) or `pip install verl` if published for your stack. The launch script expects `VERL_ROOT` to point at a directory that **contains** the `verl` Python package (for example a [KlearReasoner](https://github.com/...) style tree).
+
+## Manifest format
+
+JSONL with one object per line (or a single JSON array). Required field: `instance_id`. Typical SWE-Bench fields are supported; extras are merged into `harness` for `compute_score`.
+
+```json
+{"instance_id": "org__repo-123", "repo": "org/repo", "base_commit": "abc123", "patch": "diff --git a/..."}
+```
+
+## Build parquet
+
+```bash
+python -m data.build_rl_parquet \
+  --input path/to/trajectories.jsonl \
+  --manifest path/to/manifest.jsonl \
+  --out-dir data/parquet \
+  --strategy prefix_next_assistant \
+  --val-ratio 0.02
+```
+
+## Train (GRPO)
+
+```bash
+export VERL_ROOT=/path/to/verl_parent_repo
+export MODEL_PATH=Qwen/Qwen2.5-7B-Instruct
+export SWE_REWARD_MODE=heuristic   # or dry_run for smoke tests
+bash train/scripts/run_grpo_swe.sh
+```
+
+Override paths: `TRAIN_FILES`, `VAL_FILES`, `N_GPUS`, `TOTAL_STEPS`, etc.
+
+## Tests
+
+```bash
+pytest -q
+```

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swe-rl-training"
+version = "0.1.0"
+description = "SWE trajectories to VERL GRPO RL fine-tuning pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "datasets>=2.16.0",
+  "pyarrow>=14.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["data", "train"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

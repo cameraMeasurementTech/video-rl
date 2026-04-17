@@ -1,0 +1,6 @@
+VERL (required for RL training, not for parquet build only):
+  Pin a known-good git SHA from https://github.com/volcengine/verl or use the
+  verl tree bundled with KlearReasoner / veritas-rl (train/verl submodule).
+  Set VERL_ROOT to the repository root that contains the Python package ``verl/``.
+
+Python: >=3.10

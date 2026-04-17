@@ -1,0 +1,3 @@
+# Minimal runtime deps for the data pipeline (parquet build).
+datasets>=2.16.0
+pyarrow>=14.0.0
