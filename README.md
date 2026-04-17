@@ -50,6 +50,80 @@ pip install -e ".[merge]"
 
 ---
 
+## GPU setup: 8× NVIDIA RTX PRO 6000 (single node)
+
+Use **all eight GPUs** by setting the process count and tuning batch sizes until VRAM is well utilized without OOM. These cards are **high‑memory** professional GPUs — you can usually run **larger global batches** and **higher microbatches** than on consumer 24 GB cards; still **increase gradually** and watch `nvidia-smi`.
+
+### Use every GPU
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export N_GPUS=8
+export OMP_NUM_THREADS=1
+export TOKENIZERS_PARALLELISM=false
+```
+
+`N_GPUS` drives **`torchrun --nproc_per_node`** (SFT) and **`trainer.n_gpus_per_node`** (GRPO).
+
+### LoRA SFT — starting points (`run_lora_sft_swe.sh`)
+
+| Variable | Suggested direction (8 GPUs) |
+|----------|--------------------------------|
+| `N_GPUS` | `8` |
+| `SFT_TRAIN_BATCH_SIZE` | Start **32–64**; must divide evenly across data-parallel ranks (VERL will assert if not). |
+| `SFT_MICRO_BATCH_PER_GPU` | **2–8** — raise until GPU memory is high. |
+| `SFT_MAX_LENGTH` | **8192** default; lower if OOM. |
+
+Example:
+
+```bash
+export N_GPUS=8
+export SFT_TRAIN_BATCH_SIZE=32
+export SFT_MICRO_BATCH_PER_GPU=4
+bash train/scripts/run_lora_sft_swe.sh
+```
+
+### GRPO — starting points (`run_grpo_swe.sh`)
+
+| Variable | Role |
+|----------|------|
+| `N_GPUS` | **8** — full node. |
+| `TRAIN_BATCH_SIZE` | Global batch; try **48–128** on 8× large GPUs, then tune. |
+| `PPO_MICRO_BATCH_PER_GPU` | **2–8** — increase until near OOM. |
+| `PPO_MINI_BATCH` | Often **16–32**; align with `TRAIN_BATCH_SIZE` and VERL divisibility. |
+| `TP_SIZE` | **Tensor parallel** for vLLM rollout (**2**, **4**, or **8**). Larger models / long context often need **4**; must be compatible with VERL’s GPU layout for your fork. |
+| `ROLLOUT_N` | Samples per prompt; **6–16** improves utilization but costs VRAM and time. |
+| `GPU_MEM_UTIL` | vLLM KV cache (**0.85–0.92**). |
+| `MAX_PROMPT_LEN` / `MAX_RESPONSE_LEN` | Long SWE contexts — lower these before batch if OOM. |
+| `DATALOADER_WORKERS` | **8–16** if the GPU waits on data loading. |
+
+Example:
+
+```bash
+export N_GPUS=8
+export TRAIN_BATCH_SIZE=64
+export PPO_MICRO_BATCH_PER_GPU=4
+export PPO_MINI_BATCH=32
+export TP_SIZE=2
+export ROLLOUT_N=8
+export GPU_MEM_UTIL=0.9
+export DATALOADER_WORKERS=8
+bash train/scripts/run_grpo_swe.sh
+```
+
+### Tuning loop
+
+1. Set **`N_GPUS=8`** and confirm all eight devices show activity in `nvidia-smi` during a step.  
+2. **Increase** `TRAIN_BATCH_SIZE` and `PPO_MICRO_BATCH_PER_GPU` (or SFT equivalents) until memory is nearly full.  
+3. If **rollout** GPUs are idle, raise **`ROLLOUT_N`** or adjust **`TP_SIZE`** / model length limits.  
+4. If **OOM**: reduce sequence lengths, **`ROLLOUT_N`**, microbatch, or **`TP_SIZE`** (depending on where it fails).
+
+**Context truncation:** long prompts use `data.truncation=left` and `data.max_prompt_length` / `MAX_PROMPT_LEN`. See **Troubleshooting** if prompts are dropped (`filter_overlong_prompts`).
+
+**Multi-node** (more than one machine) is not covered by these scripts — use your VERL fork’s Ray / cluster docs.
+
+---
+
 ## Step 1 — Prepare data
 
 ### What your trajectory files contain (normal case)
@@ -140,7 +214,7 @@ export VERL_ROOT=/path/to/repo_containing_verl
 export BASE_MODEL=Qwen/Qwen2.5-7B-Instruct
 export SFT_TRAIN_PARQUET=$PWD/data/parquet_sft/train.parquet
 export SFT_VAL_PARQUET=$PWD/data/parquet_sft/val.parquet
-export N_GPUS=2
+export N_GPUS=8   # e.g. 8× RTX PRO 6000 — see "GPU setup" above
 
 bash train/scripts/run_lora_sft_swe.sh
 ```
@@ -194,7 +268,7 @@ export VAL_FILES=$PWD/data/parquet_rl/val.parquet
 export SWE_REWARD_MODE=subprocess
 export SWE_REWARD_SCRIPT=$PWD/train/tools/example_reward_stub.sh   # replace with your harness
 
-export N_GPUS=4
+export N_GPUS=8   # e.g. 8× RTX PRO 6000 — see "GPU setup" above
 bash train/scripts/run_grpo_swe.sh
 ```
 
@@ -251,6 +325,7 @@ pytest -q
 ## Troubleshooting
 
 - **OOM during SFT**: Lower `SFT_MAX_LENGTH`, `SFT_TRAIN_BATCH_SIZE`, or `LORA_RANK`.
-- **OOM during GRPO**: Lower `TRAIN_BATCH_SIZE`, `ROLLOUT_N`, `MAX_PROMPT_LEN`, or TP size in `run_grpo_swe.sh`.
+- **OOM during GRPO**: Lower `TRAIN_BATCH_SIZE`, `ROLLOUT_N`, `MAX_PROMPT_LEN`, or `TP_SIZE` / microbatch (see **GPU setup**).
+- **Low GPU utilization on 8 GPUs**: Raise batch and microbatch; tune `ROLLOUT_N`, `TP_SIZE`, `DATALOADER_WORKERS`; confirm `N_GPUS=8` and `CUDA_VISIBLE_DEVICES` include all devices.
 - **No learning**: Switch from `dry_run` / `heuristic` to **`subprocess`** with a real test-based script.
 - **VERL errors**: Ensure `PYTHONPATH` includes `VERL_ROOT` and versions match the fork you use.
